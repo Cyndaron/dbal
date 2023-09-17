@@ -1,12 +1,21 @@
 <?php
+declare(strict_types=1);
 
 namespace Cyndaron\DBAL;
 
+use BackedEnum;
+use Cyndaron\Util\Util;
+use DateTime;
+use DateTimeInterface;
 use Exception;
+use ReflectionIntersectionType;
 use ReflectionNamedType;
 use ReflectionProperty;
+use ReflectionUnionType;
 
-use function Safe\sprintf;
+use function enum_exists;
+use function is_scalar;
+use function sprintf;
 use function array_merge;
 use function reset;
 use function array_key_exists;
@@ -14,6 +23,11 @@ use function array_fill;
 use function count;
 use function implode;
 use function is_bool;
+use function is_int;
+use function is_float;
+use function assert;
+use function is_a;
+use function str_contains;
 
 abstract class Model
 {
@@ -22,8 +36,8 @@ abstract class Model
     public const TABLE_FIELDS = [];
 
     public ?int $id;
-    public string $modified;
-    public string $created;
+    public DateTime $modified;
+    public DateTime $created;
 
     final public function __construct(?int $id = null)
     {
@@ -35,7 +49,7 @@ abstract class Model
      * @throws Exception
      * @return static|null
      */
-    public static function loadFromDatabase(int $id): ?Model
+    public static function fetchById(int $id): ?Model
     {
         // Needed to make sure an object of the derived class is returned, not one of the base class.
         $object = new static($id);
@@ -81,7 +95,7 @@ abstract class Model
         }
         foreach (self::getExtendedTableFields() as $tableField)
         {
-            $this->$tableField = $record[$tableField];
+            $this->$tableField = ValueConverter::sqlToPhp($record[$tableField], static::class, $tableField);
         }
         return true;
     }
@@ -172,7 +186,7 @@ abstract class Model
         {
             if (array_key_exists($tableField, $newArray))
             {
-                $this->$tableField = $newArray[$tableField];
+                $this->$tableField = ValueConverter::sqlToPhp($newArray[$tableField], static::class, $tableField);
             }
             else
             {
@@ -213,7 +227,7 @@ abstract class Model
             $placeholders = implode(',', array_fill(0, count(static::TABLE_FIELDS), '?'));
             foreach (static::TABLE_FIELDS as $tableField)
             {
-                $arguments[] = $this->mangleVar($this->$tableField);
+                $arguments[] = ValueConverter::phpToSql($this->$tableField);
             }
 
             $result = DBConnection::doQuery('INSERT INTO ' . static::TABLE . ' (' . implode(',', static::TABLE_FIELDS) . ') VALUES (' . $placeholders . ')', $arguments);
@@ -230,8 +244,16 @@ abstract class Model
 
             foreach (static::TABLE_FIELDS as $tableField)
             {
-                $setStrings[] = $tableField . '=?';
-                $arguments[] = $this->mangleVar($this->$tableField);
+                $mangledField = ValueConverter::phpToSql($this->$tableField);
+                if ($mangledField !== null)
+                {
+                    $setStrings[] = $tableField . '=?';
+                    $arguments[] = $mangledField;
+                }
+                else
+                {
+                    $setStrings[] = $tableField . '= NULL';
+                }
             }
 
             $arguments[] = $this->id;
@@ -239,52 +261,6 @@ abstract class Model
         }
 
         return $result !== false;
-    }
-
-    /**
-     * @param mixed $var
-     * @return string|null
-     */
-    private function mangleVar($var): ?string
-    {
-        if ($var === null)
-        {
-            return null;
-        }
-
-        if (is_bool($var))
-        {
-            $var = (int)$var;
-        }
-        return (string)$var;
-    }
-
-    /**
-     * @param string $property
-     * @param string $var
-     *
-     * @throws \ReflectionException
-     * @return string|int|bool
-     */
-    public static function mangleVarForProperty(string $property, string $var)
-    {
-        $rp = new ReflectionProperty(static::class, $property);
-        /** @var ReflectionNamedType|null $type */
-        $type = $rp->getType();
-        if ($type === null)
-        {
-            return $var;
-        }
-
-        switch ($type->getName())
-        {
-            case 'int':
-                return (int)$var;
-            case 'bool':
-                return (bool)(int)$var;
-        }
-
-        return $var;
     }
 
     public static function deleteById(int $id): bool
